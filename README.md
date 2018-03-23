@@ -1,17 +1,16 @@
-# lazywatch
+# gitwatch
 
-`lazywatch` is a small CLI tool that will watch a directory and lazily invoke
-the command you provide it. Currently it will debounce file events by 1 second
-and only invoke the command if it's not already running.
+`gitwatch` is a small process that will clone and poll a git repo for changes.
+When new changes are detected it will invoke the command you provide it.
 
 ## Install
 
-    go get github.com/jondlm/lazywatch
+    go get github.com/jondlm/gitwatch
 
 ## Usage
 
-See `lazywatch -h` for more help info.
+See `gitwatch -h` for more help info.
 
 ## Example
 
-    lazywatch /tmp/mydir echo woot
+    gitwatch ssh://git@foo.com/foo.git -- echo saw an update
