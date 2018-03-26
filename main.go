@@ -44,7 +44,7 @@ func main() {
 		verbose         = app.BoolOpt("v verbose", false, "verbose logging")
 		intervalSeconds = app.IntOpt("interval-seconds", 30, "seconds gitwatch will wait between checks")
 		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatcher will create a temporary directory that it will clean up when finished")
-		key             = app.StringOpt("key", "~/.ssh/id_rsa", "location of ssh private key")
+		key             = app.StringOpt("key", "", "location of ssh private key")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 		cmd             = app.StringArg("CMD", "", "command to invoke")
@@ -80,7 +80,7 @@ func main() {
 			intervalSeconds: *intervalSeconds,
 			destDir:         *destDir,
 			cmd:             *cmd,
-			args:            derefArgs(*args), // this should remain last for weird deref issues
+			args:            derefArgs(*args),
 		}
 
 		go watchRepo(ctx)
@@ -98,6 +98,8 @@ func main() {
 }
 
 func watchRepo(ctx *context) {
+	var auth *gitSSH.PublicKeys
+	var err error
 	dir := ctx.destDir
 
 	if dir == "" {
@@ -120,13 +122,16 @@ func watchRepo(ctx *context) {
 		}
 	}
 
-	auth, err := gitSSH.NewPublicKeysFromFile("", ctx.key, "")
-	if err != nil {
-		ctx.endOfTimes <- err
-		return
+	ctx.log.Infof("cloning to %s", dir)
+
+	if ctx.key != "" {
+		auth, err = gitSSH.NewPublicKeysFromFile("", ctx.key, "")
+		if err != nil {
+			ctx.endOfTimes <- err
+			return
+		}
 	}
 
-	ctx.log.Infof("cloning to %s", dir)
 	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL:      ctx.gitRepo,
 		Progress: os.Stdout,
@@ -139,7 +144,7 @@ func watchRepo(ctx *context) {
 	runCommand(ctx)
 
 	for {
-		ctx.log.Info("pulling")
+		ctx.log.WithFields(logrus.Fields{"gitRepo": ctx.gitRepo}).Debug("pulling")
 		worktree, err := repo.Worktree()
 		if err != nil {
 			ctx.endOfTimes <- err
@@ -152,7 +157,7 @@ func watchRepo(ctx *context) {
 		})
 		switch err {
 		case git.NoErrAlreadyUpToDate:
-			ctx.log.Info("repo already up to date, nothing to do")
+			ctx.log.Debug("repo already up to date, nothing to do")
 		case nil:
 			ctx.log.Info("fetched new updates")
 			runCommand(ctx)
