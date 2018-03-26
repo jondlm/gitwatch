@@ -9,12 +9,11 @@ import (
 	"os/signal"
 	"strings"
 	"time"
-	//"path"
 
 	"github.com/jawher/mow.cli"
 	"github.com/sirupsen/logrus"
-	//"golang.org/x/crypto/ssh"
 	git "gopkg.in/src-d/go-git.v4"
+	//"golang.org/x/crypto/ssh"
 	//gitSSH "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
@@ -35,18 +34,18 @@ type context struct {
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates")
 
-	app.Spec = "[-v] [--interval-seconds] [--dir] [--repo] -- CMD [ARG...]"
+	app.Spec = "[-v] [--interval-seconds] [--repo] [--dir] CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
 		gitRepo         = app.StringOpt("repo", "", "git repo to watch")
-		cmd             = app.StringArg("CMD", "", "command to invoke")
-		args            = app.StringsArg("ARG", []string{}, "argument(s) to the command")
 		verbose         = app.BoolOpt("v verbose", false, "verbose logging")
 		intervalSeconds = app.IntOpt("interval-seconds", 30, "seconds gitwatch will wait between checks")
 		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatcher will create a temporary directory that it will clean up when finished")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
+		cmd             = app.StringArg("CMD", "", "command to invoke")
+		args            = app.StringsArg("ARG", []string{}, "argument(s) to the command")
 	)
 
 	// Register our listener for a SIGINT with the `gracefulStop` channel
@@ -70,13 +69,14 @@ func main() {
 
 	app.Action = func() {
 		ctx := &context{
-			log:             log,
+			log:        log,
+			endOfTimes: endOfTimes,
+
 			gitRepo:         *gitRepo,
-			cmd:             *cmd,
-			args:            derefArgs(*args),
 			intervalSeconds: *intervalSeconds,
-			endOfTimes:      endOfTimes,
 			destDir:         *destDir,
+			cmd:             *cmd,
+			args:            derefArgs(*args), // this should remain last for weird deref issues
 		}
 
 		go watchRepo(ctx)
