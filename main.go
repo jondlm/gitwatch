@@ -35,11 +35,11 @@ type context struct {
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates")
 
-	app.Spec = "[-v] [--interval-seconds] [--dir] [--remote] -- CMD [ARG...]"
+	app.Spec = "[-v] [--interval-seconds] [--dir] [--repo] -- CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
-		gitRepo         = app.StringOpt("remote", "", "git repo to watch")
+		gitRepo         = app.StringOpt("repo", "", "git repo to watch")
 		cmd             = app.StringArg("CMD", "", "command to invoke")
 		args            = app.StringsArg("ARG", []string{}, "argument(s) to the command")
 		verbose         = app.BoolOpt("v verbose", false, "verbose logging")
