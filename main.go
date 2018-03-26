@@ -13,8 +13,9 @@ import (
 	"github.com/jawher/mow.cli"
 	"github.com/sirupsen/logrus"
 	git "gopkg.in/src-d/go-git.v4"
+	//gitTransport "gopkg.in/src-d/go-git.v4/plumbing/transport"
 	//"golang.org/x/crypto/ssh"
-	//gitSSH "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
+	gitSSH "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
 // This gets set by `go build -ldflags "-X main.version=1.0.0"`
@@ -24,6 +25,7 @@ var log *logrus.Logger
 type context struct {
 	log             *logrus.Logger
 	gitRepo         string
+	key             string
 	cmd             string
 	args            []string
 	intervalSeconds int
@@ -32,9 +34,9 @@ type context struct {
 }
 
 func main() {
-	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates")
+	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates. Currently only supports ssh authentication.")
 
-	app.Spec = "[-v] [--interval-seconds] [--repo] [--dir] CMD [ARG...]"
+	app.Spec = "[-v] [--interval-seconds] [--key] [--repo] [--dir] CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
@@ -42,6 +44,7 @@ func main() {
 		verbose         = app.BoolOpt("v verbose", false, "verbose logging")
 		intervalSeconds = app.IntOpt("interval-seconds", 30, "seconds gitwatch will wait between checks")
 		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatcher will create a temporary directory that it will clean up when finished")
+		key             = app.StringOpt("key", "~/.ssh/id_rsa", "location of ssh private key")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 		cmd             = app.StringArg("CMD", "", "command to invoke")
@@ -72,6 +75,7 @@ func main() {
 			log:        log,
 			endOfTimes: endOfTimes,
 
+			key:             *key,
 			gitRepo:         *gitRepo,
 			intervalSeconds: *intervalSeconds,
 			destDir:         *destDir,
@@ -116,10 +120,17 @@ func watchRepo(ctx *context) {
 		}
 	}
 
+	auth, err := gitSSH.NewPublicKeysFromFile("", ctx.key, "")
+	if err != nil {
+		ctx.endOfTimes <- err
+		return
+	}
+
 	ctx.log.Infof("cloning to %s", dir)
 	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL:      ctx.gitRepo,
 		Progress: os.Stdout,
+		Auth:     auth,
 	})
 	if err != nil {
 		ctx.endOfTimes <- err
@@ -137,6 +148,7 @@ func watchRepo(ctx *context) {
 
 		err = worktree.Pull(&git.PullOptions{
 			Progress: os.Stdout,
+			Auth:     auth,
 		})
 		switch err {
 		case git.NoErrAlreadyUpToDate:
