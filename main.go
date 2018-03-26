@@ -29,20 +29,22 @@ type context struct {
 	args            []string
 	intervalSeconds int
 	endOfTimes      chan error
+	destDir         string
 }
 
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates")
 
-	app.Spec = "[-v] [--interval-seconds] GIT_REPO -- CMD [ARG...]"
+	app.Spec = "[-v] [--interval-seconds] [--dir] [--remote] -- CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
-		gitRepo         = app.StringArg("GIT_REPO", "", "git repo to watch")
+		gitRepo         = app.StringOpt("remote", "", "git repo to watch")
 		cmd             = app.StringArg("CMD", "", "command to invoke")
 		args            = app.StringsArg("ARG", []string{}, "argument(s) to the command")
 		verbose         = app.BoolOpt("v verbose", false, "verbose logging")
 		intervalSeconds = app.IntOpt("interval-seconds", 30, "seconds gitwatch will wait between checks")
+		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatcher will create a temporary directory that it will clean up when finished")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 	)
@@ -51,7 +53,7 @@ func main() {
 	signal.Notify(gracefulStop, os.Interrupt)
 	go func() {
 		<-gracefulStop
-		endOfTimes <- errors.New("stopping because of an interrupt signal")
+		endOfTimes <- errors.New("stopping due to an interrupt signal")
 	}()
 
 	app.Before = func() {
@@ -74,6 +76,7 @@ func main() {
 			args:            derefArgs(*args),
 			intervalSeconds: *intervalSeconds,
 			endOfTimes:      endOfTimes,
+			destDir:         *destDir,
 		}
 
 		go watchRepo(ctx)
@@ -91,15 +94,30 @@ func main() {
 }
 
 func watchRepo(ctx *context) {
-	tmpDir, err := ioutil.TempDir("", "")
-	if err != nil {
-		ctx.endOfTimes <- err
-		return
-	}
-	defer os.RemoveAll(tmpDir)
+	dir := ctx.destDir
 
-	ctx.log.Infof("cloning to %s", tmpDir)
-	repo, err := git.PlainClone(tmpDir, false, &git.CloneOptions{
+	if dir == "" {
+		tmpDir, err := ioutil.TempDir("", "")
+		if err != nil {
+			ctx.endOfTimes <- err
+			return
+		}
+		defer os.RemoveAll(tmpDir)
+		dir = tmpDir
+	}
+
+	// Create the directory if it doesn't exist
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		ctx.log.WithFields(logrus.Fields{"dir": dir}).Info("directory not found, creating it now")
+		err = os.MkdirAll(dir, 0644)
+		if err != nil {
+			ctx.endOfTimes <- err
+			return
+		}
+	}
+
+	ctx.log.Infof("cloning to %s", dir)
+	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
 		URL:      ctx.gitRepo,
 		Progress: os.Stdout,
 	})
