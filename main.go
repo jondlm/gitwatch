@@ -15,6 +15,7 @@ import (
 	git "gopkg.in/src-d/go-git.v4"
 	//gitTransport "gopkg.in/src-d/go-git.v4/plumbing/transport"
 	//"golang.org/x/crypto/ssh"
+	gitPlumbing "gopkg.in/src-d/go-git.v4/plumbing"
 	gitSSH "gopkg.in/src-d/go-git.v4/plumbing/transport/ssh"
 )
 
@@ -27,6 +28,7 @@ type context struct {
 	gitRepo         string
 	key             string
 	cmd             string
+	branch          string
 	args            []string
 	intervalSeconds int
 	endOfTimes      chan error
@@ -36,15 +38,16 @@ type context struct {
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates. Currently only supports ssh authentication.")
 
-	app.Spec = "[-v] [--interval-seconds] [--key] [--repo] [--dir] CMD [ARG...]"
+	app.Spec = "[-v] [--interval-seconds] [--key] [--repo] [--dir] [--branch] CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
 		gitRepo         = app.StringOpt("repo", "", "git repo to watch")
 		verbose         = app.BoolOpt("v verbose", false, "verbose logging")
 		intervalSeconds = app.IntOpt("interval-seconds", 30, "seconds gitwatch will wait between checks")
-		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatcher will create a temporary directory that it will clean up when finished")
+		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatch will create a temporary directory that it will clean up when finished")
 		key             = app.StringOpt("key", "", "location of ssh private key")
+		branch          = app.StringOpt("branch", "master", "git branch to clone and watch")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 		cmd             = app.StringArg("CMD", "", "command to invoke")
@@ -75,6 +78,7 @@ func main() {
 			log:        log,
 			endOfTimes: endOfTimes,
 
+			branch:          *branch,
 			key:             *key,
 			gitRepo:         *gitRepo,
 			intervalSeconds: *intervalSeconds,
@@ -98,7 +102,7 @@ func main() {
 }
 
 func watchRepo(ctx *context) {
-	var auth *gitSSH.PublicKeys
+	auth := git.CloneOptions{}.Auth
 	var err error
 	dir := ctx.destDir
 
@@ -133,9 +137,11 @@ func watchRepo(ctx *context) {
 	}
 
 	repo, err := git.PlainClone(dir, false, &git.CloneOptions{
-		URL:      ctx.gitRepo,
-		Progress: os.Stdout,
-		Auth:     auth,
+		URL:           ctx.gitRepo,
+		Progress:      os.Stdout,
+		Auth:          auth,
+		ReferenceName: gitPlumbing.ReferenceName(fmt.Sprintf("refs/heads/%s", ctx.branch)),
+		SingleBranch:  true,
 	})
 	if err != nil {
 		ctx.endOfTimes <- err
@@ -152,8 +158,10 @@ func watchRepo(ctx *context) {
 		}
 
 		err = worktree.Pull(&git.PullOptions{
-			Progress: os.Stdout,
-			Auth:     auth,
+			Progress:      os.Stdout,
+			Auth:          auth,
+			ReferenceName: gitPlumbing.ReferenceName(fmt.Sprintf("refs/heads/%s", ctx.branch)),
+			SingleBranch:  true,
 		})
 		switch err {
 		case git.NoErrAlreadyUpToDate:
