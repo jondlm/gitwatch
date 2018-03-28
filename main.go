@@ -1,9 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -29,16 +32,30 @@ type context struct {
 	key             string
 	cmd             string
 	branch          string
+	slackWebhook    string
+	slackTitle      string
 	args            []string
 	intervalSeconds int
 	endOfTimes      chan error
 	destDir         string
 }
 
+type slackMessageField struct {
+	Title string `json:"title"`
+	Value string `json:"value"`
+}
+
+type slackMessage struct {
+	Fallback string              `json:"fallback"`
+	Pretext  string              `json:"pretext"`
+	Color    string              `json:"color"`
+	Fields   []slackMessageField `json:"fields"`
+}
+
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates. Currently only supports ssh authentication.")
 
-	app.Spec = "[-v] [--interval-seconds] [--key] [--repo] [--dir] [--branch] CMD [ARG...]"
+	app.Spec = "[-v] [--slack-webhook] [--slack-title] [--interval-seconds] [--key] [--repo] [--dir] [--branch] CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
@@ -48,6 +65,8 @@ func main() {
 		destDir         = app.StringOpt("dir", "", "directory where the git repo will be cloned. If not provided, gitwatch will create a temporary directory that it will clean up when finished")
 		key             = app.StringOpt("key", "", "location of ssh private key")
 		branch          = app.StringOpt("branch", "master", "git branch to clone and watch")
+		slackWebhook    = app.StringOpt("slack-webhook", "", "slack webhook URL to send notifications about invocations to")
+		slackTitle      = app.StringOpt("slack-title", "", "the title that the slack webhook should report when sending messages, this should be a name that can help people identify where this process is running")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 		cmd             = app.StringArg("CMD", "", "command to invoke")
@@ -78,6 +97,8 @@ func main() {
 			log:        log,
 			endOfTimes: endOfTimes,
 
+			slackTitle:      *slackTitle,
+			slackWebhook:    *slackWebhook,
 			branch:          *branch,
 			key:             *key,
 			gitRepo:         *gitRepo,
@@ -181,15 +202,47 @@ func watchRepo(ctx *context) {
 
 func runCommand(ctx *context) error {
 	ctx.log.WithFields(logrus.Fields{"command": strings.Join(append([]string{ctx.cmd}, ctx.args...), " ")}).Info("running command")
+
+	slackColor := "good"
 	c := exec.Command(ctx.cmd, ctx.args...)
 	output, err := c.CombinedOutput()
 	if err != nil {
 		ctx.log.Error("error while running command")
 		ctx.log.Error(err)
+		slackColor = "bad"
 	} else {
 		log.Info("success")
 	}
 	fmt.Printf(string(output))
+
+	if ctx.slackWebhook != "" {
+		json, err := json.Marshal(slackMessage{
+			Fallback: ctx.slackTitle,
+			Pretext:  ctx.slackTitle,
+			Color:    slackColor,
+			Fields: []slackMessageField{
+				slackMessageField{
+					Title: "stdout and stderr",
+					Value: fmt.Sprintf("```%s```", string(output)),
+				},
+			},
+		})
+
+		req, err := http.NewRequest("POST", ctx.slackWebhook, bytes.NewBuffer(json))
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			ctx.log.Warnf("unable to send slack notification: %v", err)
+		}
+		if resp.StatusCode != 200 {
+			body, _ := ioutil.ReadAll(resp.Body)
+			ctx.log.Warnf("got non 200 from slack: %s", body)
+		}
+		defer resp.Body.Close()
+	}
+
 	return err
 }
 
