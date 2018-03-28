@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -34,6 +35,7 @@ type context struct {
 	branch          string
 	slackWebhook    string
 	slackTitle      string
+	slackHTTPProxy  *url.URL
 	args            []string
 	intervalSeconds int
 	endOfTimes      chan error
@@ -55,7 +57,7 @@ type slackMessage struct {
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates. Currently only supports ssh authentication.")
 
-	app.Spec = "[-v] [--slack-webhook] [--slack-title] [--interval-seconds] [--key] [--repo] [--dir] [--branch] CMD [ARG...]"
+	app.Spec = "[-v] [--slack-http-proxy] [--slack-webhook] [--slack-title] [--interval-seconds] [--key] [--repo] [--dir] [--branch] CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
@@ -67,6 +69,7 @@ func main() {
 		branch          = app.StringOpt("branch", "master", "git branch to clone and watch")
 		slackWebhook    = app.StringOpt("slack-webhook", "", "slack webhook URL to send notifications about invocations to")
 		slackTitle      = app.StringOpt("slack-title", "", "the title that the slack webhook should report when sending messages, this should be a name that can help people identify where this process is running")
+		slackHTTPProxy  = app.StringOpt("slack-http-proxy", "", "a URL to an http proxy to use for the slack webhook calls")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 		cmd             = app.StringArg("CMD", "", "command to invoke")
@@ -93,10 +96,23 @@ func main() {
 	}
 
 	app.Action = func() {
+		var err error
+		var parsedProxyURL *url.URL
+
+		if *slackHTTPProxy != "" {
+			parsedProxyURL, err = url.Parse(*slackHTTPProxy)
+			if err != nil {
+				log.Errorf("unable to parse --slack-http-proxy: %v", err)
+				// Use cli.Exit so we give mow.cli a change to run its hooks
+				cli.Exit(1)
+			}
+		}
+
 		ctx := &context{
 			log:        log,
 			endOfTimes: endOfTimes,
 
+			slackHTTPProxy:  parsedProxyURL,
 			slackTitle:      *slackTitle,
 			slackWebhook:    *slackWebhook,
 			branch:          *branch,
@@ -110,7 +126,7 @@ func main() {
 
 		go watchRepo(ctx)
 
-		err := <-endOfTimes
+		err = <-endOfTimes
 		if err != nil {
 			log.Error(err)
 			// Use cli.Exit so we give mow.cli a change to run its hooks
@@ -209,7 +225,7 @@ func runCommand(ctx *context) error {
 	if err != nil {
 		ctx.log.Error("error while running command")
 		ctx.log.Error(err)
-		slackColor = "bad"
+		slackColor = "danger"
 	} else {
 		log.Info("success")
 	}
@@ -222,7 +238,7 @@ func runCommand(ctx *context) error {
 			Color:    slackColor,
 			Fields: []slackMessageField{
 				slackMessageField{
-					Title: "stdout and stderr",
+					Title: "output",
 					Value: fmt.Sprintf("```%s```", string(output)),
 				},
 			},
@@ -231,7 +247,16 @@ func runCommand(ctx *context) error {
 		req, err := http.NewRequest("POST", ctx.slackWebhook, bytes.NewBuffer(json))
 		req.Header.Set("Content-Type", "application/json")
 
-		client := &http.Client{}
+		var client *http.Client
+
+		if ctx.slackHTTPProxy != nil {
+			ctx.log.Info("one")
+			client = &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(ctx.slackHTTPProxy)}}
+		} else {
+			ctx.log.Info("two")
+			client = &http.Client{}
+		}
+
 		resp, err := client.Do(req)
 		if err != nil {
 			ctx.log.Warnf("unable to send slack notification: %v", err)
