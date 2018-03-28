@@ -36,6 +36,7 @@ type context struct {
 	slackWebhook    string
 	slackTitle      string
 	slackHTTPProxy  *url.URL
+	slackChannel    string
 	args            []string
 	intervalSeconds int
 	endOfTimes      chan error
@@ -51,13 +52,24 @@ type slackMessage struct {
 	Fallback string              `json:"fallback"`
 	Pretext  string              `json:"pretext"`
 	Color    string              `json:"color"`
+	Channel  string              `json:"channel"`
 	Fields   []slackMessageField `json:"fields"`
 }
 
 func main() {
 	app := cli.App("gitwatch", "Watch a git repo and execute a command on updates. Currently only supports ssh authentication.")
 
-	app.Spec = "[-v] [--slack-http-proxy] [--slack-webhook] [--slack-title] [--interval-seconds] [--key] [--repo] [--dir] [--branch] CMD [ARG...]"
+	app.Spec = "[-v] " +
+		"[--slack-http-proxy] " +
+		"[--slack-webhook] " +
+		"[--slack-title] " +
+		"[--slack-channel] " +
+		"[--interval-seconds] " +
+		"[--key] " +
+		"[--repo] " +
+		"[--dir] " +
+		"[--branch] " +
+		"CMD [ARG...]"
 	app.Version("version", version)
 
 	var (
@@ -70,6 +82,7 @@ func main() {
 		slackWebhook    = app.StringOpt("slack-webhook", "", "slack webhook URL to send notifications about invocations to")
 		slackTitle      = app.StringOpt("slack-title", "", "the title that the slack webhook should report when sending messages, this should be a name that can help people identify where this process is running")
 		slackHTTPProxy  = app.StringOpt("slack-http-proxy", "", "a URL to an http proxy to use for the slack webhook calls")
+		slackChannel    = app.StringOpt("slack-channel", "", "the slack channel to send messages to. If not provided, slack will send messages to the default channel for your webhook")
 		gracefulStop    = make(chan os.Signal)
 		endOfTimes      = make(chan error)
 		cmd             = app.StringArg("CMD", "", "command to invoke")
@@ -103,7 +116,16 @@ func main() {
 			parsedProxyURL, err = url.Parse(*slackHTTPProxy)
 			if err != nil {
 				log.Errorf("unable to parse --slack-http-proxy: %v", err)
-				// Use cli.Exit so we give mow.cli a change to run its hooks
+				cli.Exit(1)
+			}
+		}
+
+		if *slackChannel != "" {
+			hasHashPrefix := strings.HasPrefix(*slackChannel, "#")
+			hasAtPrefix := strings.HasPrefix(*slackChannel, "@")
+
+			if !hasHashPrefix && !hasAtPrefix {
+				log.Error("when using --slack-channel, make sure it starts with either a '#' or an '@'")
 				cli.Exit(1)
 			}
 		}
@@ -115,6 +137,7 @@ func main() {
 			slackHTTPProxy:  parsedProxyURL,
 			slackTitle:      *slackTitle,
 			slackWebhook:    *slackWebhook,
+			slackChannel:    *slackChannel,
 			branch:          *branch,
 			key:             *key,
 			gitRepo:         *gitRepo,
@@ -232,7 +255,7 @@ func runCommand(ctx *context) error {
 	fmt.Printf(string(output))
 
 	if ctx.slackWebhook != "" {
-		json, err := json.Marshal(slackMessage{
+		message := slackMessage{
 			Fallback: ctx.slackTitle,
 			Pretext:  ctx.slackTitle,
 			Color:    slackColor,
@@ -242,7 +265,13 @@ func runCommand(ctx *context) error {
 					Value: fmt.Sprintf("```%s```", string(output)),
 				},
 			},
-		})
+		}
+
+		if ctx.slackChannel != "" {
+			message.Channel = ctx.slackChannel
+		}
+
+		json, err := json.Marshal(message)
 
 		req, err := http.NewRequest("POST", ctx.slackWebhook, bytes.NewBuffer(json))
 		req.Header.Set("Content-Type", "application/json")
